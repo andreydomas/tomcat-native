@@ -694,6 +694,39 @@ cleanup:
     return rv;
 }
 
+TCN_IMPLEMENT_CALL(void, SSLContext, setSessionTicketKeyFile)(TCN_STDARGS, jlong ctx,
+                                                              jstring file)
+{
+    FILE *f;
+    char buffer[48];
+
+    TCN_ALLOC_CSTRING(file);
+
+    f = fopen(J2S(file), "rb");
+    if (f == NULL) {
+        tcn_Throw(e, "Unable to load ticket key from file %s: %s", J2S(file),
+                  strerror(errno));
+        return;
+    }
+
+    if (fread(buffer, 48, 1, f) != 1)
+         tcn_Throw(e, "Length of the session key file must be >= 48 bytes");
+
+    fclose(f);
+
+    tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
+    SSL_CTX_set_tlsext_ticket_keys(c->ctx, buffer, 48);
+
+    TCN_FREE_CSTRING(file);
+}
+
+TCN_IMPLEMENT_CALL(void, SSLContext, setSessionCacheTimeout)(TCN_STDARGS, jlong ctx,
+                                                             jlong timeout)
+{
+    tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
+    SSL_CTX_set_timeout(c->ctx, timeout);
+}
+
 #else
 /* OpenSSL is not supported.
  * Create empty stubs.
@@ -836,6 +869,22 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setCertificate)(TCN_STDARGS, jlong ctx,
     UNREFERENCED(password);
     UNREFERENCED(idx);
     return JNI_FALSE;
+}
+
+TCN_IMPLEMENT_CALL(void, SSLContext, setSessionTicketKeyFile)(TCN_STDARGS, jlong ctx,
+                                                              jstring file)
+{
+    UNREFERENCED_STDARGS;
+    UNREFERENCED(ctx);
+    UNREFERENCED(file);
+}
+
+TCN_IMPLEMENT_CALL(void, SSLContext, setSessionCacheTimeout)(TCN_STDARGS, jlong ctx,
+                                                             jlong timeout)
+{
+    UNREFERENCED_STDARGS;
+    UNREFERENCED(ctx);
+    UNREFERENCED(timeout);
 }
 
 #endif
