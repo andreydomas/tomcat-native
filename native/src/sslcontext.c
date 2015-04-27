@@ -699,7 +699,7 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setSessionTicketKey)(TCN_STDARGS, jlong ctx
 {
     tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
     jbyte* key_buffer = (*e)->GetByteArrayElements(e, key, NULL);
-    SSL_CTX_set_tlsext_ticket_keys(c->ctx, key_buffer, 48);
+    SSL_CTX_set_tlsext_ticket_keys(c->ctx, key_buffer, (*e)->GetArrayLength(e, key));
     (*e)->ReleaseByteArrayElements(e, key, key_buffer, 0);
 }
 
