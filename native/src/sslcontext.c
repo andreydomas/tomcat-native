@@ -29,6 +29,21 @@
 #ifdef HAVE_OPENSSL
 #include "ssl_private.h"
 
+#define KEY_NONE      0
+#define KEY_PRIMARY   1
+#define KEY_SECONDARY 2
+#define KEY_SINGLE    3
+
+struct SSL_ticket_key {
+    unsigned char type;
+    unsigned char padding[15];
+    unsigned char name[16];
+    unsigned char aes_key[16];
+    unsigned char hmac_key[16];
+};
+
+int ssl_session_ticket_keys_index = NULL;
+
 static apr_status_t ssl_context_cleanup(void *data)
 {
     tcn_ssl_ctxt_t *c = (tcn_ssl_ctxt_t *)data;
@@ -694,13 +709,91 @@ cleanup:
     return rv;
 }
 
+static int ticket_key_callback(SSL* ssl, unsigned char key_name[16], unsigned char* iv,
+                               EVP_CIPHER_CTX* evp_ctx, HMAC_CTX* hmac_ctx, int new_session) {
+
+    struct SSL_ticket_key* key = SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl), ssl_session_ticket_keys_index);
+    struct SSL_ticket_key* secondary_key = NULL;
+
+    if (key == NULL) {
+        return -1;
+    } else if (key->type == KEY_PRIMARY) {
+        secondary_key = key + 1;
+    } else if (key->type == KEY_SECONDARY) {
+        secondary_key = key++;
+    }
+
+    if (new_session) {
+        RAND_pseudo_bytes(iv, 16);
+        EVP_EncryptInit_ex(evp_ctx, EVP_aes_128_cbc(), NULL, key->aes_key, iv);
+        HMAC_Init_ex(hmac_ctx, key->hmac_key, 16, EVP_sha256(), NULL);
+        memcpy(key_name, key->name, 16);
+        return 1;
+    } else {
+        if (memcmp(key_name, key->name, 16) == 0) {
+            HMAC_Init_ex(hmac_ctx, key->hmac_key, 16, EVP_sha256(), NULL);
+            EVP_DecryptInit_ex(evp_ctx, EVP_aes_128_cbc(), NULL, key->aes_key, iv);
+            return 1;
+        } else if (secondary_key != NULL && memcmp(key_name, secondary_key->name, 16) == 0) {
+            HMAC_Init_ex(hmac_ctx, secondary_key->hmac_key, 16, EVP_sha256(), NULL);
+            EVP_DecryptInit_ex(evp_ctx, EVP_aes_128_cbc(), NULL, secondary_key->aes_key, iv);
+            return 2;
+        }
+        return 0;
+    }
+}
+
 TCN_IMPLEMENT_CALL(void, SSLContext, setSessionTicketKey)(TCN_STDARGS, jlong ctx,
                                                               jbyteArray key)
 {
     tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
-    jbyte* key_buffer = (*e)->GetByteArrayElements(e, key, NULL);
-    SSL_CTX_set_tlsext_ticket_keys(c->ctx, key_buffer, (*e)->GetArrayLength(e, key));
-    (*e)->ReleaseByteArrayElements(e, key, key_buffer, 0);
+
+    if (ssl_session_ticket_keys_index == NULL) {
+        ssl_session_ticket_keys_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+    }
+
+    if (ssl_session_ticket_keys_index == -1) {
+        tcn_Throw(e, "SSL_CTX_get_ex_new_index() failed");
+    }
+
+    struct SSL_ticket_key* app_data_key = SSL_CTX_get_ex_data(c->ctx, ssl_session_ticket_keys_index);
+
+    if (app_data_key == NULL) {
+        app_data_key = malloc(2 * sizeof(struct SSL_ticket_key));
+        app_data_key->type = KEY_NONE;
+        if (SSL_CTX_set_ex_data(c->ctx, ssl_session_ticket_keys_index, app_data_key) == 0) {
+            tcn_Throw(e, "SSL_CTX_set_ex_data() failed");
+        }
+    }
+
+   if (key == NULL) {
+        SSL_CTX_set_tlsext_ticket_key_cb(c->ctx, NULL);
+        app_data_key->type = KEY_NONE;
+    } else if ((*e)->GetArrayLength(e, key) != 48) {
+        tcn_Throw(e, "TLS ticket key must be 48 bytes long");
+    } else {
+        struct SSL_ticket_key* new_key;
+        unsigned char new_type;
+
+        switch (app_data_key->type) {
+            case KEY_NONE:
+                new_key = app_data_key;
+                new_type = KEY_SINGLE;
+                break;
+            case KEY_SECONDARY:
+                new_key = app_data_key;
+                new_type = KEY_PRIMARY;
+                break;
+            default:
+                new_key = app_data_key + 1;
+                new_type = KEY_SECONDARY;
+        }
+
+        (*e)->GetByteArrayRegion(e, key, 0, 48, (jbyte*)&new_key->name);
+        app_data_key->type = new_type;
+
+        SSL_CTX_set_tlsext_ticket_key_cb(c->ctx, ticket_key_callback);
+    }
 }
 
 TCN_IMPLEMENT_CALL(void, SSLContext, setSessionCacheTimeout)(TCN_STDARGS, jlong ctx,
