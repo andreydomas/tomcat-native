@@ -743,13 +743,17 @@ static int ticket_key_callback(SSL* ssl, unsigned char key_name[16], unsigned ch
     }
 }
 
+void ticket_key_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad, int idx, long argl, void *argp) {
+    free(ptr);
+}
+
 TCN_IMPLEMENT_CALL(void, SSLContext, setSessionTicketKey)(TCN_STDARGS, jlong ctx,
                                                               jbyteArray key)
 {
     tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
 
     if (ssl_session_ticket_keys_index == NULL) {
-        ssl_session_ticket_keys_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+        ssl_session_ticket_keys_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, ticket_key_free);
     }
 
     if (ssl_session_ticket_keys_index == -1) {
