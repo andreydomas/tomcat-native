@@ -807,6 +807,40 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setSessionCacheTimeout)(TCN_STDARGS, jlong 
     SSL_CTX_set_timeout(c->ctx, timeout);
 }
 
+TCN_IMPLEMENT_CALL(void, SSLContext, setDHParameters)(TCN_STDARGS, jlong ctx,
+                                                             jstring file)
+{
+    tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
+    TCN_ALLOC_CSTRING(file);
+
+    TCN_ASSERT(ctx != 0);
+    UNREFERENCED(o);
+
+    if (J2S(file)) {
+        BIO *bio = NULL;
+        DH *dh = NULL;
+
+        if ((bio = BIO_new(BIO_s_file())) == NULL) {
+            tcn_Throw(e, "BIO_new() failed");
+        }
+
+        if (BIO_read_filename(bio, J2S(file)) <= 0) {
+            tcn_Throw(e, "Error reading file %s", J2S(file));
+        }
+
+        dh = PEM_read_bio_DHparams(bio, NULL, NULL, NULL);
+        BIO_free(bio);
+
+        if (dh == NULL)
+            tcn_Throw(e, "Error setting DHParams");
+
+        SSL_CTX_set_tmp_dh(c->ctx, dh);
+        DH_free(dh);
+    }
+
+    TCN_FREE_CSTRING(file);
+}
+
 TCN_IMPLEMENT_CALL(jlong, SSLContext, sessionNumber)(TCN_STDARGS, jlong ctx)
 {
     tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
@@ -1050,6 +1084,15 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setSessionCacheTimeout)(TCN_STDARGS, jlong 
     UNREFERENCED(ctx);
     UNREFERENCED(timeout);
 }
+
+TCN_IMPLEMENT_CALL(void, SSLContext, setDHParameters)(TCN_STDARGS, jlong ctx,
+                                                             jstring file)
+{
+    UNREFERENCED_STDARGS;
+    UNREFERENCED(ctx);
+    UNREFERENCED(file);
+}
+
 
 TCN_IMPLEMENT_CALL(jlong, SSLContext, sessionNumber)(TCN_STDARGS, jlong ctx)
 {
