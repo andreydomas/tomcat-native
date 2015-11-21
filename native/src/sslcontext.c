@@ -42,7 +42,7 @@ struct SSL_ticket_key {
     unsigned char hmac_key[16];
 };
 
-int ssl_session_ticket_keys_index = NULL;
+int ssl_session_ticket_keys_index = -1;
 
 static apr_status_t ssl_context_cleanup(void *data)
 {
@@ -752,7 +752,7 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setSessionTicketKey)(TCN_STDARGS, jlong ctx
 {
     tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
 
-    if (ssl_session_ticket_keys_index == NULL) {
+    if (ssl_session_ticket_keys_index == -1) {
         ssl_session_ticket_keys_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, ticket_key_free);
     }
 
@@ -1074,7 +1074,7 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setSessionTicketKey)(TCN_STDARGS, jlong ctx
 {
     UNREFERENCED_STDARGS;
     UNREFERENCED(ctx);
-    UNREFERENCED(file);
+    UNREFERENCED(key);
 }
 
 TCN_IMPLEMENT_CALL(void, SSLContext, setSessionCacheTimeout)(TCN_STDARGS, jlong ctx,
