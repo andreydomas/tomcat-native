@@ -42,6 +42,11 @@ struct SSL_ticket_key {
     unsigned char hmac_key[16];
 };
 
+struct OCSP_staple {
+    int len;
+    unsigned char *data;
+};
+
 int ssl_session_ticket_keys_index = -1;
 
 static apr_status_t ssl_context_cleanup(void *data)
@@ -816,29 +821,143 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setDHParameters)(TCN_STDARGS, jlong ctx,
     TCN_ASSERT(ctx != 0);
     UNREFERENCED(o);
 
-    if (J2S(file)) {
-        BIO *bio = NULL;
-        DH *dh = NULL;
+    BIO *bio = NULL;
+    DH *dh = NULL;
+    char err[256];
 
+    if (J2S(file)) {
         if ((bio = BIO_new(BIO_s_file())) == NULL) {
-            tcn_Throw(e, "BIO_new() failed");
+            ERR_error_string(ERR_get_error(), err);
+            tcn_Throw(e, "BIO_new() failed: %s");
+            goto cleanup;
         }
 
         if (BIO_read_filename(bio, J2S(file)) <= 0) {
-            tcn_Throw(e, "Error reading file %s", J2S(file));
+            ERR_error_string(ERR_get_error(), err);
+            tcn_Throw(e, "Error reading file %s: %s", J2S(file), err);
+            goto cleanup;
         }
 
         dh = PEM_read_bio_DHparams(bio, NULL, NULL, NULL);
-        BIO_free(bio);
 
-        if (dh == NULL)
-            tcn_Throw(e, "Error setting DHParams");
+        if (dh == NULL) {
+            ERR_error_string(ERR_get_error(), err);
+            tcn_Throw(e, "PEM_read_bio_DHparams() failed: %s", err);
+            goto cleanup;
+        }
 
-        SSL_CTX_set_tmp_dh(c->ctx, dh);
-        DH_free(dh);
+        if (SSL_CTX_set_tmp_dh(c->ctx, dh) != 1) {
+            ERR_error_string(ERR_get_error(), err);
+            tcn_Throw(e, "Error setting DHParams: %s", err);
+            goto cleanup;
+        }
     }
 
+cleanup:
     TCN_FREE_CSTRING(file);
+    if (bio != NULL)
+        BIO_free(bio);
+    if (dh != NULL)
+        DH_free(dh);
+}
+
+static int ocsp_stapling_cb(SSL *ssl, void *data) {
+    struct OCSP_staple *staple = (struct OCSP_staple *) data;
+
+    // have to make a copy of the OCSP response
+    // because openssl will make free this var on the context termination
+    unsigned char *response_copy = (unsigned char *) malloc(staple->len);
+
+    if (response_copy == NULL)
+         return SSL_TLSEXT_ERR_ALERT_FATAL;
+
+    memcpy(response_copy, staple->data, staple->len);
+
+    SSL_set_tlsext_status_ocsp_resp(ssl, response_copy, staple->len);
+
+    return SSL_TLSEXT_ERR_OK;
+}
+
+TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong ctx,
+                                                             jstring file)
+{
+    tcn_ssl_ctxt_t *c = J2P(ctx, tcn_ssl_ctxt_t *);
+    TCN_ALLOC_CSTRING(file);
+
+    TCN_ASSERT(ctx != 0);
+    UNREFERENCED(o);
+
+    BIO *bio = NULL;
+    OCSP_RESPONSE *response = NULL;
+    int len;
+    unsigned char *buf = NULL;
+    struct OCSP_staple *staple = NULL;
+    char err[256];
+
+    if (J2S(file)) {
+
+        if ((bio = BIO_new(BIO_s_file())) == NULL) {
+            ERR_error_string(ERR_get_error(), err);
+            tcn_Throw(e, "BIO_new() failed: %s", err);
+            goto cleanup;
+        }
+
+        if (BIO_read_filename(bio, J2S(file)) <= 0) {
+            ERR_error_string(ERR_get_error(), err);
+            tcn_Throw(e, "Error reading file %s: %s",
+                    J2S(file), err);
+            goto cleanup;
+        }
+
+        response = d2i_OCSP_RESPONSE_bio(bio, NULL);
+        if (response == NULL) {
+            ERR_error_string(ERR_get_error(), err);
+            tcn_Throw(e, "Error parsing OCSP response file %s: %s",
+                    J2S(file), err);
+            goto cleanup;
+        }
+
+        len = i2d_OCSP_RESPONSE(response, NULL);
+        if (len <= 0) {
+            ERR_error_string(ERR_get_error(), err);
+            tcn_Throw(e, "i2d_OCSP_RESPONSE() failed: %s", err);
+            goto cleanup;
+        }
+
+        buf = (char *) malloc(len);
+        if (buf == NULL) {
+            tcn_Throw(e, "buf malloc() failed");
+            goto cleanup;
+        }
+
+        len = i2d_OCSP_RESPONSE(response, &buf);
+        if (len <= 0) {
+            ERR_error_string(ERR_get_error(), err);
+            tcn_Throw(e, "i2d_OCSP_RESPONSE() filed: %s", err);
+            free(buf);
+            goto cleanup;
+        }
+
+        staple = (struct OCSP_staple *) malloc(sizeof(struct OCSP_staple));
+        if (staple == NULL) {
+            tcn_Throw(e, "staple malloc() failed");
+            free(buf);
+            goto cleanup;
+        }
+
+        staple->data = buf - len;
+        staple->len = len;
+
+        SSL_CTX_set_tlsext_status_cb(c->ctx, ocsp_stapling_cb);
+        SSL_CTX_set_tlsext_status_arg(c->ctx, staple);
+    }
+
+cleanup:
+    TCN_FREE_CSTRING(file);
+    if (bio != NULL)
+        BIO_free(bio);
+    if (response != NULL)
+        OCSP_RESPONSE_free(response);
 }
 
 TCN_IMPLEMENT_CALL(jlong, SSLContext, sessionNumber)(TCN_STDARGS, jlong ctx)
@@ -1093,6 +1212,13 @@ TCN_IMPLEMENT_CALL(void, SSLContext, setDHParameters)(TCN_STDARGS, jlong ctx,
     UNREFERENCED(file);
 }
 
+TCN_IMPLEMENT_CALL(void, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong ctx,
+                                                             jstring file)
+{
+    UNREFERENCED_STDARGS;
+    UNREFERENCED(ctx);
+    UNREFERENCED(file);
+}
 
 TCN_IMPLEMENT_CALL(jlong, SSLContext, sessionNumber)(TCN_STDARGS, jlong ctx)
 {
