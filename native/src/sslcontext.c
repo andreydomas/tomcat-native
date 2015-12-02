@@ -930,7 +930,9 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong
             goto cleanup;
         }
 
-        len = i2d_OCSP_RESPONSE(response, &buf);
+        unsigned char *tmp = buf;
+
+        len = i2d_OCSP_RESPONSE(response, &tmp);
         if (len <= 0) {
             ERR_error_string(ERR_get_error(), err);
             tcn_Throw(e, "i2d_OCSP_RESPONSE() filed: %s", err);
@@ -945,7 +947,7 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong
             goto cleanup;
         }
 
-        staple->data = buf - len;
+        staple->data = buf;
         staple->len = len;
 
         SSL_CTX_set_tlsext_status_cb(c->ctx, ocsp_stapling_cb);
