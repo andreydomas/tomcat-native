@@ -899,14 +899,14 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong
         if ((bio = BIO_new(BIO_s_file())) == NULL) {
             ERR_error_string(ERR_get_error(), err);
             tcn_Throw(e, "BIO_new() failed: %s", err);
-            goto cleanup;
+            goto disable;
         }
 
         if (BIO_read_filename(bio, J2S(file)) <= 0) {
             ERR_error_string(ERR_get_error(), err);
             tcn_Throw(e, "Error reading file %s: %s",
                     J2S(file), err);
-            goto cleanup;
+            goto disable;
         }
 
         response = d2i_OCSP_RESPONSE_bio(bio, NULL);
@@ -914,20 +914,20 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong
             ERR_error_string(ERR_get_error(), err);
             tcn_Throw(e, "Error parsing OCSP response file %s: %s",
                     J2S(file), err);
-            goto cleanup;
+            goto disable;
         }
 
         len = i2d_OCSP_RESPONSE(response, NULL);
         if (len <= 0) {
             ERR_error_string(ERR_get_error(), err);
             tcn_Throw(e, "i2d_OCSP_RESPONSE() failed: %s", err);
-            goto cleanup;
+            goto disable;
         }
 
         buf = (char *) malloc(len);
         if (buf == NULL) {
             tcn_Throw(e, "buf malloc() failed");
-            goto cleanup;
+            goto disable;
         }
 
         unsigned char *tmp = buf;
@@ -937,14 +937,14 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong
             ERR_error_string(ERR_get_error(), err);
             tcn_Throw(e, "i2d_OCSP_RESPONSE() filed: %s", err);
             free(buf);
-            goto cleanup;
+            goto disable;
         }
 
         staple = (struct OCSP_staple *) malloc(sizeof(struct OCSP_staple));
         if (staple == NULL) {
             tcn_Throw(e, "staple malloc() failed");
             free(buf);
-            goto cleanup;
+            goto disable;
         }
 
         staple->data = buf;
@@ -952,7 +952,11 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong
 
         SSL_CTX_set_tlsext_status_cb(c->ctx, ocsp_stapling_cb);
         SSL_CTX_set_tlsext_status_arg(c->ctx, staple);
+        goto cleanup;
     }
+
+disable:
+    SSL_CTX_set_tlsext_status_cb(c->ctx, NULL);
 
 cleanup:
     TCN_FREE_CSTRING(file);
