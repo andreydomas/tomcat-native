@@ -34,6 +34,12 @@
 #define KEY_SECONDARY 2
 #define KEY_SINGLE    3
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
+#define NPN_ADVERTISE "\x08http/1.1"
+unsigned char *srv  = (unsigned char *) NPN_ADVERTISE;
+unsigned int srvlen = sizeof(NPN_ADVERTISE) - 1;
+#endif
+
 struct SSL_ticket_key {
     unsigned char type;
     unsigned char padding[15];
@@ -81,6 +87,25 @@ static apr_status_t ssl_context_cleanup(void *data)
     }
     return APR_SUCCESS;
 }
+
+#ifndef OPENSSL_NO_NEXTPROTONEG
+static int next_proto_cb(SSL* ssl, const unsigned char **data,
+                         unsigned int *len, void *arg) {
+    *data = srv;
+    *len = srvlen;
+    return SSL_TLSEXT_ERR_OK;
+}
+
+#if OPENSSL_VERSION_NUMBER >= 0x10002000L
+static int alpn_select_proto_cb(SSL* ssl, const unsigned char **out,
+                                unsigned char *outlen, const unsigned char *in,
+                                unsigned int inlen, void *arg) {
+    return SSL_select_next_proto((unsigned char **) out, outlen, srv, srvlen,
+                    in, inlen) == OPENSSL_NPN_NEGOTIATED
+        ? SSL_TLSEXT_ERR_OK : SSL_TLSEXT_ERR_NOACK;
+}
+#endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
+#endif // OPENSSL_NO_NEXTPROTONEG
 
 /* Initialize server context */
 TCN_IMPLEMENT_CALL(jlong, SSLContext, make)(TCN_STDARGS, jlong pool,
@@ -223,6 +248,15 @@ TCN_IMPLEMENT_CALL(jlong, SSLContext, make)(TCN_STDARGS, jlong pool,
     SSL_CTX_set_default_passwd_cb(c->ctx, (pem_password_cb *)SSL_password_callback);
     SSL_CTX_set_default_passwd_cb_userdata(c->ctx, (void *)(&tcn_password_callback));
     SSL_CTX_set_info_callback(c->ctx, SSL_callback_handshake);
+
+    /* Setup ALPN & NPN */
+#ifndef OPENSSL_NO_NEXTPROTONEG
+#if OPENSSL_VERSION_NUMBER >= 0x10002000L
+    SSL_CTX_set_alpn_select_cb(c->ctx, alpn_select_proto_cb, NULL);
+#endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
+    SSL_CTX_set_next_protos_advertised_cb(c->ctx, next_proto_cb, NULL);
+#endif // OPENSSL_NO_NEXTPROTONEG
+
     /*
      * Let us cleanup the ssl context when the pool is destroyed
      */
@@ -893,6 +927,7 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong
     unsigned char *buf = NULL;
     struct OCSP_staple *staple = NULL;
     char err[256];
+    jboolean rv = JNI_FALSE;
 
     if (J2S(file)) {
 
@@ -924,7 +959,7 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong
             goto disable;
         }
 
-        buf = (char *) malloc(len);
+        buf = (unsigned char *) malloc(len);
         if (buf == NULL) {
             tcn_Throw(e, "buf malloc() failed");
             goto disable;
@@ -952,6 +987,7 @@ TCN_IMPLEMENT_CALL(jboolean, SSLContext, setOCSPStaplingFile)(TCN_STDARGS, jlong
 
         SSL_CTX_set_tlsext_status_cb(c->ctx, ocsp_stapling_cb);
         SSL_CTX_set_tlsext_status_arg(c->ctx, staple);
+        rv = JNI_TRUE;
         goto cleanup;
     }
 
@@ -964,6 +1000,8 @@ cleanup:
         BIO_free(bio);
     if (response != NULL)
         OCSP_RESPONSE_free(response);
+
+    return rv;
 }
 
 TCN_IMPLEMENT_CALL(jlong, SSLContext, sessionNumber)(TCN_STDARGS, jlong ctx)
